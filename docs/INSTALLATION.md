@@ -69,6 +69,7 @@ zshrc (`source ~/.zshrc`) after this.
 Finally install the python library:
 
 ```bash
+pip install -r requirements.txt
 pip install -e .
 ```
 
@@ -82,6 +83,7 @@ PerAct^2 uses the [RLBench fork](https://github.com/markusgrotz/RLBench).
 ```bash
 cd third_party
 cd RLBench
+pip install -r requirements.txt
 pip install -e .
 ```
 
@@ -89,31 +91,130 @@ For [running in headless mode](https://github.com/MohitShridhar/RLBench/tree/per
 
 #### 4. YARR
 
-PerAct^2 uses the [YARR fork](https://github.com/markusgrotz/YARR).
+PerAct² uses the [YARR fork](https://github.com/markusgrotz/YARR).
+
+Before installation, downgrade pip to avoid compatibility issues
+with older `omegaconf` versions required by `hydra-core==1.0.5`.
 
 ```bash
-cd third_party
-cd YARR
+python -m pip install "pip<24.1"
+pip install setuptools==61.1.0
+```
+
+Then install YARR in editable mode:
+
+```bash
+cd third_party/YARR
 pip install -e .
+```
+
+If dependency resolution fails, manually install compatible versions:
+
+```bash
+pip install "omegaconf>=2.0.5,<2.1"
+pip install importlib-resources
+pip install fsspec
+```
+
+You can verify the installation with:
+
+```bash
+python -c "import yarr, hydra, omegaconf; print(hydra.__version__, omegaconf.__version__)"
 ```
 
 #### 5. pytorch3d
 
+PerAct² uses a local pytorch3d fork.
+
+Install required dependencies first:
+
 ```bash
-cd third_party
-cd pytorch3d
+cd third_party/pytorch3d
+
 conda install -c fvcore -c iopath -c conda-forge fvcore iopath
+```
+
+Before installation, make sure your CUDA toolkit version matches
+the CUDA version used to compile PyTorch.
+
+You can check with:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.version.cuda)"
+nvcc --version
+```
+
+For example:
+
+- PyTorch CUDA 11.8 ↔ nvcc 11.8
+- PyTorch CUDA 12.1 ↔ nvcc 12.1
+
+If these versions mismatch, pytorch3d compilation will fail with:
+
+```text
+RuntimeError: The detected CUDA version mismatches the version that was used to compile PyTorch
+```
+
+(Optional but recommended)
+
+```bash
+conda install ninja
+```
+
+Then install pytorch3d in editable mode:
+
+```bash
 pip install -e .
 ```
 
+Note:
+- pytorch3d compiles CUDA/C++ extensions during installation.
+- Compilation may take several minutes.
+- Processes such as `cc1plus`, `cudafe++`, or `nvcc` are expected during build.
+
+You can verify the installation with:
+
+```bash
+python -c "import pytorch3d; print(pytorch3d.__version__)"
+python -c "import torch; import pytorch3d._C; print('pytorch3d C extension ok')"
+```
 #### 6. wandb
+
+Install the compatible wandb version used by PerAct²:
 
 ```bash
 pip install wandb==0.14.0
 ```
 
+wandb 0.14.0 may downgrade or modify some dependencies
+(e.g. protobuf), which can trigger additional missing dependency
+warnings for rendering or video-related packages.
 
+If pyrender-related dependency warnings appear, install:
 
+```bash
+pip install freetype-py imageio "pyglet>=1.4.10" PyOpenGL==3.1.0 scipy trimesh
+```
 
+For movie/video utilities compatibility with older research codebases:
 
+```bash
+pip install "moviepy<2.0"
+pip install "decorator<6.0,>=4.0.2" imageio_ffmpeg "proglog<=1.0.0" python-dotenv
+```
 
+We recommend keeping:
+
+- `pip < 24.1`
+- `numpy == 1.24.x`
+- `moviepy == 1.0.3`
+
+to avoid compatibility issues with older Hydra/OmegaConf and
+PerAct² dependencies.
+
+You can verify the installation with:
+
+```bash
+python -c "import wandb; print(wandb.__version__)"
+python -c "import wandb, pyrender, moviepy; print('wandb/pyrender/moviepy ok')"
+```
