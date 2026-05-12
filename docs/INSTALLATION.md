@@ -1,16 +1,18 @@
 # INSTALLATION
 
-To install the dependencies execute the `scripts/install_dependencies.sh`
+<!-- these installation .sh files are old!! -->
+<!-- To install the dependencies execute the `scripts/install_dependencies.sh`
 
 ```bash
 scripts/install_conda.sh # Skip this step if you already have conda installed.
 scripts/install_dependencies.sh
 ```
 
-Please see the [README](README.md) for a quick start instruction.
+Please see the [README](README.md) for a quick start instruction. -->
 
 
-Alternatively, you can follow the detailed instructions to setup the software from scratch
+<!-- Alternatively,  -->
+you can follow the detailed instructions to setup the software from scratch
 
 #### 1. Environment
 
