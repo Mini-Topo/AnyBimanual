@@ -578,13 +578,14 @@ class QAttentionPerActBCAgent(Agent):
         )
         total_loss = combined_losses.mean()
         if step % 10 == 0 and rank == 0:
-            wandb.log({
-                'train/grip_loss': q_grip_loss.mean(),
-                'train/trans_loss': q_trans_loss.mean(),
-                'train/rot_loss': q_rot_loss.mean(),
-                'train/collision_loss': q_collision_loss.mean(),
-                'train/total_loss': total_loss,
-            }, step=step)
+            if wandb.run is not None:
+                wandb.log({
+                    'train/grip_loss': q_grip_loss.mean(),
+                    'train/trans_loss': q_trans_loss.mean(),
+                    'train/rot_loss': q_rot_loss.mean(),
+                    'train/collision_loss': q_collision_loss.mean(),
+                    'train/total_loss': total_loss,
+                }, step=step)
 
         self._optimizer.zero_grad()
         total_loss.backward()
@@ -630,6 +631,7 @@ class QAttentionPerActBCAgent(Agent):
 
         q_trans_vis=True
         if step % self.cfg.framework.log_freq == 0  and rank == 0:
+        # if step % 10 == 0 and rank == 0:
             print(f"{arm}_arm_predict: {self._vis_max_coordinate}")
             print(f"{arm}_gt: {self._vis_gt_coordinate}")
             rendered_img = visualise_voxel(
@@ -915,22 +917,22 @@ class QAttentionPerActBCAgent(Agent):
                     if "_voxelizer" not in k:
                         logging.warning("key %s not found in checkpoint" % k)
 
-        if not self._training:
-            # reshape voxelizer weights
-            b = merged_state_dict["_voxelizer._ones_max_coords"].shape[0]
-            merged_state_dict["_voxelizer._ones_max_coords"] = merged_state_dict[
-                "_voxelizer._ones_max_coords"
-            ][0:1]
-            flat_shape = merged_state_dict["_voxelizer._flat_output"].shape[0]
-            merged_state_dict["_voxelizer._flat_output"] = merged_state_dict[
-                "_voxelizer._flat_output"
-            ][0 : flat_shape // b]
-            merged_state_dict["_voxelizer._tiled_batch_indices"] = merged_state_dict[
-                "_voxelizer._tiled_batch_indices"
-            ][0:1]
-            merged_state_dict["_voxelizer._index_grid"] = merged_state_dict[
-                "_voxelizer._index_grid"
-            ][0:1]
+        # if not self._training:
+        # reshape voxelizer weights
+        b = merged_state_dict["_voxelizer._ones_max_coords"].shape[0]
+        merged_state_dict["_voxelizer._ones_max_coords"] = merged_state_dict[
+            "_voxelizer._ones_max_coords"
+        ][0:1]
+        flat_shape = merged_state_dict["_voxelizer._flat_output"].shape[0]
+        merged_state_dict["_voxelizer._flat_output"] = merged_state_dict[
+            "_voxelizer._flat_output"
+        ][0 : flat_shape // b]
+        merged_state_dict["_voxelizer._tiled_batch_indices"] = merged_state_dict[
+            "_voxelizer._tiled_batch_indices"
+        ][0:1]
+        merged_state_dict["_voxelizer._index_grid"] = merged_state_dict[
+            "_voxelizer._index_grid"
+        ][0:1]
         self._q.load_state_dict(merged_state_dict)
         print("loaded weights from %s" % weight_file)
 

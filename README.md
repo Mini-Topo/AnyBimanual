@@ -43,6 +43,33 @@ See [INSTALL.md](docs/INSTALLATION.md) for installation instructions.
 
 See [ERROR_CATCH.md](docs/ERROR_CATCH.md) for error catching.
 
+## Additional Python Dependencies
+
+During setup, the following Python packages were additionally required but not automatically installed:
+
+```bash
+pip install ftfy
+pip install regex
+pip install blosc
+pip install transformers
+pip install plotly
+```
+
+You may also install them together:
+
+```bash
+pip install ftfy regex blosc transformers plotly
+```
+
+These packages are required for:
+
+* CLIP tokenizer (`ftfy`, `regex`)
+* replay utilities (`blosc`)
+* transformer-based policy loading (`transformers`)
+* visualization utilities (`plotly`)
+
+
+
 # 🛠️ Usage
 
 The following steps are structured in order.
@@ -57,6 +84,10 @@ is randomly sampled in `data_generator_bimanual.py`.
 
 
 ## 🚆 Training
+prepare this apt module
+```bash
+sudo apt install tmux
+```
 We use wandb to log some curves and visualizations. Login to wandb before running the scripts.
 ```bash
 wandb login

@@ -1,0 +1,160 @@
+[2026-05-13 14:11:46,454][root][INFO] - 
+rlbench:
+  task_name: debug_test
+  tasks:
+  - bimanual_pick_laptop
+  demo_path: /home/tappei-m/Project/AnyBimanual_data/rlbench2
+  episode_length: 25
+  cameras:
+  - over_shoulder_left
+  - over_shoulder_right
+  - overhead
+  - wrist_right
+  - wrist_left
+  - front
+  camera_resolution:
+  - 256
+  - 256
+  scene_bounds:
+  - -0.3
+  - -0.5
+  - 0.6
+  - 0.7
+  - 0.5
+  - 1.6
+  include_lang_goal_in_obs: true
+  time_in_state: true
+  headless: true
+  gripper_mode: BimanualDiscrete
+  arm_action_mode: BimanualEndEffectorPoseViaPlanning
+  action_mode: BimanualMoveArmThenGripper
+framework:
+  tensorboard_logging: true
+  csv_logging: true
+  gpu: 0
+  logdir: /home/tappei-m/Project/AnyBimanual_logs
+  start_seed: 0
+  record_every_n: 5
+  eval_envs: 1
+  eval_from_eps_number: 0
+  eval_episodes: 1
+  eval_type: all
+  eval_save_metrics: true
+cinematic_recorder:
+  enabled: false
+  camera_resolution:
+  - 1280
+  - 720
+  fps: 30
+  rotate_speed: 0.005
+  save_path: /tmp/videos/
+method:
+  name: PERACT_BC
+  agent_type: leader_follower
+  robot_name: bimanual
+  image_crop_size: 64
+  bounds_offset:
+  - 0.15
+  voxel_sizes:
+  - 100
+  include_prev_layer: false
+  num_latents: 2048
+  latent_dim: 512
+  transformer_depth: 6
+  transformer_iterations: 1
+  cross_heads: 1
+  cross_dim_head: 64
+  latent_heads: 8
+  latent_dim_head: 64
+  pos_encoding_with_lang: true
+  conv_downsample: true
+  lang_fusion_type: seq
+  voxel_patch_size: 5
+  voxel_patch_stride: 5
+  final_dim: 64
+  low_dim_size: 4
+  input_dropout: 0.1
+  attn_dropout: 0.1
+  decoder_dropout: 0.0
+  lr: 0.0005
+  lr_scheduler: false
+  num_warmup_steps: 3000
+  optimizer: lamb
+  lambda_weight_l2: 1.0e-06
+  trans_loss_weight: 1.0
+  rot_loss_weight: 1.0
+  grip_loss_weight: 1.0
+  collision_loss_weight: 1.0
+  rotation_resolution: 5
+  activation: lrelu
+  norm: None
+  crop_augmentation: true
+  transform_augmentation:
+    apply_se3: true
+    aug_xyz:
+    - 0.125
+    - 0.125
+    - 0.125
+    aug_rpy:
+    - 0.0
+    - 0.0
+    - 45.0
+    aug_rot_resolution: ${method.rotation_resolution}
+  demo_augmentation: true
+  demo_augmentation_every_n: 10
+  no_skip_connection: false
+  no_perceiver: false
+  no_language: false
+  keypoint_method: heuristic
+
+[2026-05-13 14:11:46,461][root][INFO] - Using env device cuda:0.
+[2026-05-13 14:11:46,464][root][INFO] - Evaluating seed 0.
+[2026-05-13 14:11:46,464][root][INFO] - Using method PERACT_BC with type leader_follower
+[05/13/26 14:11:55] INFO     INFO:root:eval _independent_env_runner.py:130
+                             _env:                                        
+                             Launching env.                               
+                    INFO     INFO:root:Agen _independent_env_runner.py:133
+                             t information:                               
+                    INFO     INFO:root:<yar _independent_env_runner.py:134
+                             r.agents.agent                               
+                             .LeaderFollowe                               
+                             rAgent object                                
+                             at                                           
+                             0x76e345a2db20                               
+                             >                                            
+[05/13/26 14:11:56] INFO     INFO:root:Using dual panda environment.py:117
+                             robot                                        
+                    INFO     INFO:root:Setting      arm_action_modes.py:79
+                             control mode for both                        
+                             robots                                       
+                    WARNING  WARNING:root:not sure  task_environment.py:57
+                             how _robot_shapes are                        
+                             used is used.                                
+                    INFO     INFO:root:Eval _independent_env_runner.py:164
+                             uating weight                                
+                             0                                            
+/home/tappei-m/Project/AnyBimanual/agents/peract_bc/qattention_peract_bc_agent.py:863: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  state_dict = torch.load(weight_file, map_location=device)
+loaded weights from /home/tappei-m/Project/AnyBimanual_logs/debug_test/PERACT_BC/seed0/weights/0/checkpoint_peract_bc_leader_layer_0.pt
+loaded weights from /home/tappei-m/Project/AnyBimanual_logs/debug_test/PERACT_BC/seed0/weights/0/checkpoint_peract_bc_follower_layer_0.pt
+Tasks:   0%|          | 0/1 [00:00<?, ?it/s]
+Episodes:   0%|          | 0/1 [00:00<?, ?it/s][A                    INFO     INFO:root:eval _independent_env_runner.py:191
+                             _env: Starting                               
+                             episode 0,                                   
+                             seed 0.                                      
+eval_demo_seed:  0
+[05/13/26 14:11:59] INFO     INFO:root:total waypoints 6,      task.py:370
+                             (right=3, left=3)                            
+/home/tappei-m/Project/AnyBimanual/third_party/YARR/yarr/utils/rollout_generator.py:76: UserWarning: Creating a tensor from a list of numpy.ndarrays is extremely slow. Please consider converting the list to a single numpy.ndarray with numpy.array() before converting to a tensor. (Triggered internally at /opt/conda/conda-bld/pytorch_1724789115405/work/torch/csrc/utils/tensor_new.cpp:278.)
+  prepped_data = {k: torch.tensor([v], device=self._env_device) for k, v in obs_history.items()}
+
+Episodes: 100%|██████████| 1/1 [02:07<00:00, 127.27s/it][AEpisodes: 100%|██████████| 1/1 [02:07<00:00, 127.27s/it]
+Tasks: 100%|██████████| 1/1 [02:07<00:00, 127.27s/it]Tasks: 100%|██████████| 1/1 [02:07<00:00, 127.27s/it]Evaluating bimanual_pick_laptop | Episode 0 | Score: 0.0 | Lang Goal: pick up the laptop
+Finished bimanual_pick_laptop | Final Score: unknown
+
+[05/13/26 14:14:04] INFO     INFO:root:Fini _independent_env_runner.py:292
+                             shed                                         
+                             evaluation.                                  
+[CoppeliaSim:loadinfo]   done.
+
+[W513 14:14:10.654966811 CudaIPCTypes.cpp:16] Producer process has been terminated before all shared CUDA tensors released. See Note [Sharing CUDA tensors]

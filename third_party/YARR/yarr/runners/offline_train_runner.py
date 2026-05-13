@@ -121,7 +121,7 @@ class OfflineTrainRunner():
         if self.anybimanual:
             ##########################################Load Weights########################################################
             method = self.method
-            file_path = f"/path/to/your/pre-trained ckpts/{method.name}/"
+            file_path = f"/home/tappei-m/Project/AnyBimanual_checkpoints/{method.name}/"
             self._agent.load_weights(file_path)
             if self._rank == 0:
                 print("-----------------Loading Success Pre-trained Model----------------------")
