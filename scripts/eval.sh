@@ -9,20 +9,21 @@ seed="0"
 # set the gpu id for evaluation. we use one gpu for parallel evaluation.
 eval_gpu=${2:-"0"}
 
-test_demo_path="path/to/your/dataset"
+test_demo_path="/home/tappei-m/Project/AnyBimanual_data/rlbench2"
+logdir="/home/tappei-m/Project/AnyBimanual_logs"
 
 addition_info="$(date +%Y%m%d)"
 exp_name=${3:-"${method}_${addition_info}"}
 
 starttime=`date +'%Y-%m-%d %H:%M:%S'`
 
-camera=False
+camera=True
 gripper_mode='BimanualDiscrete'
 arm_action_mode='BimanualEndEffectorPoseViaPlanning'
 action_mode='BimanualMoveArmThenGripper'
-tasks=[bimanual_pick_laptop,bimanual_pick_plate,bimanual_straighten_rope,coordinated_lift_ball,coordinated_lift_tray,coordinated_push_box,coordinated_put_bottle_in_fridge,dual_push_buttons,handover_item,bimanual_sweep_to_dustpan,coordinated_take_tray_out_of_oven,handover_item_easy]
+tasks=[bimanual_pick_laptop]
 eval_type="all"
-eval_episodes=25
+eval_episodes=1
 
 echo "I am going to kill the session ${exp_name}_${eval_type}, are you sure? (5s)"
 sleep 2s
@@ -32,10 +33,11 @@ echo "start new tmux session: ${exp_name}_${eval_type}, running eval.py"
 tmux new-session -d -s ${exp_name}_${eval_type}
 
 tmux select-pane -t 0 
-tmux send-keys "conda activate per2; 
+tmux send-keys "conda activate rlbench; 
 CUDA_VISIBLE_DEVICES=${eval_gpu} xvfb-run -a python eval.py method=$method \
     rlbench.task_name=${exp_name} \
     rlbench.demo_path=${test_demo_path} \
+    framework.logdir=${logdir} \
     framework.start_seed=${seed} \
     cinematic_recorder.enabled=${camera} \
     rlbench.gripper_mode=${gripper_mode} \

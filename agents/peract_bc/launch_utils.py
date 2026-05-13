@@ -105,6 +105,7 @@ def create_agent(cfg: DictConfig):
             num_devices=cfg.ddp.num_devices,
             checkpoint_name_prefix=cfg.framework.checkpoint_name_prefix,
             anybimanual=cfg.framework.anybimanual,
+            cfg=cfg,
         )
         qattention_agents.append(qattention_agent)
 
