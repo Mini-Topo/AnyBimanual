@@ -11,6 +11,10 @@ replay/
 ckpts/
 bimanual_data/
 misc/
+*.jsonl
+*.pkl
+*.log
+*.png
 # C extensions
 *.so
 *.ipynb

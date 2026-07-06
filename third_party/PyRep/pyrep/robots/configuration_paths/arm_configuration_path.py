@@ -129,9 +129,20 @@ class ArmConfigurationPath(ConfigurationPath):
                 state, pos_vel_accel = sim.simRMLStep(rml_handle, dt, 1)
                 if state >= 0:
                     pos = pos_vel_accel[0]
-                    for i in range(len(lengths)-1):
+                    eps = 1e-8
+
+                    for i in range(len(lengths) - 1):
                         if lengths[i] <= pos <= lengths[i + 1]:
-                            t = (pos - lengths[i]) / (lengths[i + 1] - lengths[i])
+                            denom = lengths[i + 1] - lengths[i]
+
+                            if abs(denom) < eps:
+                                # Consecutive path points can be identical when the planner returns
+                                # a degenerate / near-zero-length segment. Skipping avoids NaN in
+                                # interpolation and prevents invalid joint targets from being sent.
+                                continue
+
+                            t = (pos - lengths[i]) / denom
+
                             # For each joint
                             offset = len(self._arm.joints) * i
                             p1 = self._path_points[
@@ -166,9 +177,20 @@ class ArmConfigurationPath(ConfigurationPath):
         state, posVelAccel = sim.simRMLStep(self._rml_handle, dt, 1)
         if state >= 0:
             pos = posVelAccel[0]
+            eps = 1e-8
+
             for i in range(len(lengths) - 1):
                 if lengths[i] <= pos <= lengths[i + 1]:
-                    t = (pos - lengths[i]) / (lengths[i + 1] - lengths[i])
+                    denom = lengths[i + 1] - lengths[i]
+
+                    if abs(denom) < eps:
+                        # Consecutive path points can be identical when the planner returns
+                        # a degenerate / near-zero-length segment. Skipping avoids NaN in
+                        # interpolation and prevents invalid joint targets from being sent.
+                        continue
+
+                    t = (pos - lengths[i]) / denom
+
                     # For each joint
                     offset = len(self._arm.joints) * i
                     p1 = self._path_points[

@@ -33,6 +33,14 @@ from helpers.optim.lamb import Lamb
 
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+def r2bc_debug_enabled() -> bool:
+    return os.environ.get("R2BC_VERBOSE_DEBUG", "0") == "1"
+
+
+def r2bc_debug_print(*args, **kwargs):
+    if r2bc_debug_enabled():
+        print(*args, **kwargs)
+
 
 class QFunction(nn.Module):
     def __init__(
@@ -43,6 +51,7 @@ class QFunction(nn.Module):
         rotation_resolution: float,
         device,
         training,
+        use_ddp: bool = False,
     ):
         super(QFunction, self).__init__()
         self._rotation_resolution = rotation_resolution
@@ -51,8 +60,13 @@ class QFunction(nn.Module):
         self._qnet = perceiver_encoder.to(device)
 
         # distributed training
-        if training:
-            self._qnet = DDP(self._qnet, device_ids=[device], find_unused_parameters=True)
+        if training and use_ddp:
+            device_id = device.index if isinstance(device, torch.device) else device
+            self._qnet = DDP(
+                self._qnet,
+                device_ids=[device_id],
+                find_unused_parameters=True,
+            )
 
     def _argmax_3d(self, tensor_orig):
         b, c, d, h, w = tensor_orig.shape  # c will be one
@@ -106,20 +120,23 @@ class QFunction(nn.Module):
             [p.permute(0, 2, 3, 1).reshape(b, -1, feat_size) for p in rgb], 1
         )
 
+        # batch bounds if necessary
+        if bounds is not None and bounds.shape[0] != b:
+            bounds = bounds.repeat(b, 1)
+
+        if prev_bounds is not None and prev_bounds.shape[0] != b:
+            prev_bounds = prev_bounds.repeat(b, 1)
+
         # construct voxel grid
         voxel_grid = self._voxelizer.coords_to_bounding_voxel_grid(
             pcd_flat, coord_features=flat_imag_features, coord_bounds=bounds
         )
 
-        # swap to channels fist
+        # swap to channels first
         voxel_grid = voxel_grid.permute(0, 4, 1, 2, 3).detach()
 
-        # batch bounds if necessary
-        if bounds.shape[0] != b:
-            bounds = bounds.repeat(b, 1)
-
         # forward pass
-        q_trans, q_rot_and_grip, q_ignore_collisions = self._qnet(
+        q_trans, q_rot_and_grip, q_ignore_collisions, L_skill, L_voxel = self._qnet(
             voxel_grid,
             proprio,
             lang_goal_emb,
@@ -130,7 +147,7 @@ class QFunction(nn.Module):
             arm=arm,
         )
 
-        return q_trans, q_rot_and_grip, q_ignore_collisions, voxel_grid
+        return q_trans, q_rot_and_grip, q_ignore_collisions, voxel_grid, L_skill, L_voxel
 
 
 class QAttentionPerActBCAgent(Agent):
@@ -226,6 +243,8 @@ class QAttentionPerActBCAgent(Agent):
             max_num_coords=np.prod(self._image_resolution) * self._num_cameras,
         )
 
+        use_ddp = self._num_devices > 1
+
         self._q = (
             QFunction(
                 self._perceiver_encoder,
@@ -234,6 +253,7 @@ class QAttentionPerActBCAgent(Agent):
                 self._rotation_resolution,
                 device,
                 training,
+                use_ddp=use_ddp,
             )
             .to(device)
             .train(training)
@@ -254,21 +274,79 @@ class QAttentionPerActBCAgent(Agent):
         ).unsqueeze(0)
 
         if self._training:
+
+            if self.anybimanual:
+                for name, p in self._q.named_parameters():
+                    p.requires_grad = False
+
+                unfreeze_trans_head = os.environ.get("R2BC_UNFREEZE_TRANS_HEAD", "0") == "1"
+                unfreeze_rot_grip_head = os.environ.get("R2BC_UNFREEZE_ROT_GRIP_HEAD", "0") == "1"
+                unfreeze_rot_grip_dense = os.environ.get("R2BC_UNFREEZE_ROT_GRIP_DENSE", "0") == "1"
+                unfreeze_final_conv = os.environ.get("R2BC_UNFREEZE_FINAL_CONV", "0") == "1"
+
+                for name, p in self._q.named_parameters():
+                    lname = name.lower()
+
+                    is_anybimanual_module = (
+                        "skill_manager" in lname or "visual_aligner" in lname
+                    )
+
+                    is_trans_head = (
+                        unfreeze_trans_head
+                        and "trans_decoder" in lname
+                    )
+
+                    is_rot_grip_head = (
+                        unfreeze_rot_grip_head
+                        and "rot_grip_collision_ff" in lname
+                    )
+
+                    is_rot_grip_dense = (
+                        unfreeze_rot_grip_dense
+                        and ("dense0" in lname or "dense1" in lname)
+                    )
+
+                    is_final_conv = (
+                        unfreeze_final_conv
+                        and "final.conv3d" in lname
+                    )
+
+                    if (
+                        is_anybimanual_module
+                        or is_trans_head
+                        or is_rot_grip_head
+                        or is_rot_grip_dense
+                        or is_final_conv
+                    ):
+                        p.requires_grad = True
+                        logging.info("[R2BC trainable] %s %s", name, tuple(p.shape))
+
+                trainable_params = [p for p in self._q.parameters() if p.requires_grad]
+
+                logging.info(
+                    "[R2BC trainable params] %d",
+                    sum(p.numel() for p in trainable_params)
+                )
+            else:
+                trainable_params = self._q.parameters()
+
             # optimizer
             if self._optimizer_type == "lamb":
                 self._optimizer = Lamb(
-                    self._q.parameters(),
+                    trainable_params,
                     lr=self._lr,
                     weight_decay=self._lambda_weight_l2,
                     betas=(0.9, 0.999),
                     adam=False,
                 )
+
             elif self._optimizer_type == "adam":
                 self._optimizer = torch.optim.Adam(
-                    self._q.parameters(),
+                    trainable_params,
                     lr=self._lr,
                     weight_decay=self._lambda_weight_l2,
                 )
+
             else:
                 raise Exception("Unknown optimizer type")
 
@@ -440,7 +518,14 @@ class QAttentionPerActBCAgent(Agent):
         q_collision_softmax = F.softmax(q_collision, dim=1)
         return q_collision_softmax
 
-    def update(self, step: int, replay_sample: dict) -> dict:
+    def update(
+        self,
+        step: int,
+        replay_sample: dict,
+        zero_grad: bool = True,
+        step_optimizer: bool = True,
+        loss_scale: float = 1.0,
+    ) -> dict:
         action_trans = replay_sample["trans_action_indicies"][
             :, self._layer * 3 : self._layer * 3 + 3
         ].int()
@@ -465,10 +550,22 @@ class QAttentionPerActBCAgent(Agent):
             proprio = replay_sample["low_dim_state"]
 
         obs, pcd = self._preprocess_inputs(replay_sample)
-        if proprio.shape[-1] == 4:
-            arm = "right"
+
+        if "target_arm_id" in replay_sample:
+            target_arm_id = int(replay_sample["target_arm_id"][0].detach().cpu().item())
+            arm = "right" if target_arm_id == 0 else "left"
+        elif "target_arm" in replay_sample:
+            arm = replay_sample["target_arm"]
         else:
-            arm = "left"
+            # fallback: original behavior
+            if proprio.shape[-1] == 4:
+                arm = "right"
+            else:
+                arm = "left"
+
+        if step == 0:
+            r2bc_debug_print("[debug update] arm:", arm)
+
         # batch size
         bs = pcd[0].shape[0]
 
@@ -491,7 +588,7 @@ class QAttentionPerActBCAgent(Agent):
             )
 
         # forward pass
-        q_trans, q_rot_grip, q_collision, voxel_grid = self._q(
+        q_trans, q_rot_grip, q_collision, voxel_grid, L_skill, L_voxel = self._q(
             obs,
             proprio,
             pcd,
@@ -510,6 +607,79 @@ class QAttentionPerActBCAgent(Agent):
             ignore_collision_indicies,
         ) = self._q.choose_highest_action(q_trans, q_rot_grip, q_collision)
 
+        # ------------------------------------------------------------
+        # DEBUG: update path の rot/grip prediction を直接見る
+        # ------------------------------------------------------------
+        debug_gt_rot_grip = None
+        debug_pred_rot_grip_raw = None
+        debug_pred_rot_grip_act_style = None
+        debug_gt_grip = None
+        debug_pred_grip_raw = None
+        debug_pred_grip_act_style = None
+        debug_pred_voxel_raw = None
+        debug_pred_voxel_act_style = None
+
+        if q_rot_grip is not None:
+            with torch.no_grad():
+                # update path で使っている raw q からの argmax
+                debug_gt_rot_grip = action_rot_grip[0].detach().cpu()
+                debug_pred_rot_grip_raw = rot_and_grip_indicies[0].detach().cpu()
+                debug_pred_voxel_raw = coords[0].detach().cpu()
+
+                debug_gt_grip = int(debug_gt_rot_grip[-1].item())
+                debug_pred_grip_raw = int(debug_pred_rot_grip_raw[-1].item())
+
+                # act() path と同じように softmax 後に argmax したもの
+                q_trans_act_style = self._softmax_q_trans(q_trans.detach())
+                q_rot_grip_act_style = self._softmax_q_rot_grip(q_rot_grip.detach())
+                q_collision_act_style = (
+                    self._softmax_ignore_collision(q_collision.detach())
+                    if q_collision is not None
+                    else q_collision
+                )
+
+                (
+                    debug_coords_act_style,
+                    debug_rot_grip_act_style,
+                    debug_collision_act_style,
+                ) = self._q.choose_highest_action(
+                    q_trans_act_style,
+                    q_rot_grip_act_style,
+                    q_collision_act_style,
+                )
+
+                debug_pred_voxel_act_style = (
+                    debug_coords_act_style[0].detach().cpu()
+                )
+
+                debug_pred_rot_grip_act_style = (
+                    debug_rot_grip_act_style[0].detach().cpu()
+                )
+                debug_pred_grip_act_style = int(
+                    debug_pred_rot_grip_act_style[-1].item()
+                )
+
+                if os.environ.get("R2BC_DEBUG_ROT_GRIP_UPDATE", "0") == "1":
+                    debug_every = int(os.environ.get("R2BC_DEBUG_ROT_GRIP_EVERY", "20"))
+
+                    if step < 3 or step % debug_every == 0:
+                        r2bc_debug_print(
+                            "[update rot/grip debug]",
+                            f"step={step}",
+                            f"arm={arm}",
+                            f"gt_voxel={action_trans[0].detach().cpu().tolist()}",
+                            f"pred_voxel_raw={debug_pred_voxel_raw.tolist()}",
+                            f"pred_voxel_act_style={debug_pred_voxel_act_style.tolist()}",
+                            f"gt_rot_grip={debug_gt_rot_grip.tolist()}",
+                            f"pred_raw={debug_pred_rot_grip_raw.tolist()}",
+                            f"pred_act_style={debug_pred_rot_grip_act_style.tolist()}",
+                            f"gt_grip={debug_gt_grip}",
+                            f"pred_grip_raw={debug_pred_grip_raw}",
+                            f"pred_grip_act_style={debug_pred_grip_act_style}",
+                        )
+                
+                ####################################################
+
         q_trans_loss, q_rot_loss, q_grip_loss, q_collision_loss = 0.0, 0.0, 0.0, 0.0
 
         # translation one-hot
@@ -522,6 +692,58 @@ class QAttentionPerActBCAgent(Agent):
         q_trans_flat = q_trans.view(bs, -1)
         action_trans_one_hot_flat = action_trans_one_hot.view(bs, -1)
         q_trans_loss = self._celoss(q_trans_flat, action_trans_one_hot_flat)
+
+        if os.environ.get("R2BC_LOG_TRANS_LOGITS", "0") == "1":
+            with torch.no_grad():
+                for b in range(bs):
+                    gt_coord = action_trans[b, :].detach().long()
+                    pred_coord_raw = coords[b]
+
+                    if torch.is_tensor(pred_coord_raw):
+                        pred_coord = pred_coord_raw.detach().long().to(q_trans.device)
+                    else:
+                        pred_coord = torch.as_tensor(
+                            pred_coord_raw,
+                            dtype=torch.long,
+                            device=q_trans.device,
+                        )
+
+                    # q_trans is usually [B, C, X, Y, Z] with C=1.
+                    # Keep this robust in case channel dimension is absent.
+                    if q_trans.dim() == 5:
+                        gt_logit = q_trans[
+                            b, :, gt_coord[0], gt_coord[1], gt_coord[2]
+                        ].max()
+                        pred_logit = q_trans[
+                            b, :, pred_coord[0], pred_coord[1], pred_coord[2]
+                        ].max()
+                    elif q_trans.dim() == 4:
+                        gt_logit = q_trans[
+                            b, gt_coord[0], gt_coord[1], gt_coord[2]
+                        ]
+                        pred_logit = q_trans[
+                            b, pred_coord[0], pred_coord[1], pred_coord[2]
+                        ]
+                    else:
+                        gt_logit = torch.tensor(float("nan"), device=q_trans.device)
+                        pred_logit = torch.tensor(float("nan"), device=q_trans.device)
+
+                    gt_rank = int((q_trans_flat[b] > gt_logit).sum().item()) + 1
+                    pred_rank = int((q_trans_flat[b] > pred_logit).sum().item()) + 1
+                    margin_pred_minus_gt = (pred_logit - gt_logit).item()
+
+                    r2bc_debug_print(
+                        "[trans logit debug]"
+                        f" step={step}"
+                        f" b={b}"
+                        f" gt={gt_coord.detach().cpu().tolist()}"
+                        f" pred={pred_coord.detach().cpu().tolist()}"
+                        f" gt_logit={gt_logit.item():.6f}"
+                        f" pred_logit={pred_logit.item():.6f}"
+                        f" margin_pred_minus_gt={margin_pred_minus_gt:.6f}"
+                        f" gt_rank={gt_rank}"
+                        f" pred_rank={pred_rank}"
+                    )
 
         with_rot_and_grip = rot_and_grip_indicies is not None
         if with_rot_and_grip:
@@ -576,7 +798,12 @@ class QAttentionPerActBCAgent(Agent):
             + (q_grip_loss * self._grip_loss_weight)
             + (q_collision_loss * self._collision_loss_weight)
         )
+
+        if os.environ.get("R2BC_TRANS_ONLY", "0") == "1":
+            combined_losses = q_trans_loss * self._trans_loss_weight
+
         total_loss = combined_losses.mean()
+        
         if step % 10 == 0 and rank == 0:
             if wandb.run is not None:
                 wandb.log({
@@ -587,9 +814,13 @@ class QAttentionPerActBCAgent(Agent):
                     'train/total_loss': total_loss,
                 }, step=step)
 
-        self._optimizer.zero_grad()
-        total_loss.backward()
-        self._optimizer.step()
+        if zero_grad:
+            self._optimizer.zero_grad()
+
+        (total_loss * loss_scale).backward()
+
+        if step_optimizer:
+            self._optimizer.step()
 
         self._summaries = {
             "losses/total_loss": total_loss,
@@ -599,6 +830,16 @@ class QAttentionPerActBCAgent(Agent):
             "losses/collision_loss": q_collision_loss.mean()
             if with_rot_and_grip
             else 0.0,
+
+            "debug/gt_rot_grip": debug_gt_rot_grip,
+            "debug/pred_rot_grip_raw": debug_pred_rot_grip_raw,
+            "debug/pred_rot_grip_act_style": debug_pred_rot_grip_act_style,
+            "debug/gt_grip": debug_gt_grip,
+            "debug/pred_grip_raw": debug_pred_grip_raw,
+            "debug/pred_grip_act_style": debug_pred_grip_act_style,
+
+            "debug/pred_voxel_raw": debug_pred_voxel_raw,
+            "debug/pred_voxel_act_style": debug_pred_voxel_act_style,
         }
         self._wandb_summaries = {
             'losses/total_loss': total_loss,
@@ -607,7 +848,7 @@ class QAttentionPerActBCAgent(Agent):
             'losses/grip_loss': q_grip_loss.mean() if with_rot_and_grip else 0.,
             'losses/collision_loss': q_collision_loss.mean() if with_rot_and_grip else 0.
         }
-        if self._lr_scheduler:
+        if step_optimizer and self._lr_scheduler:
             self._scheduler.step()
             self._summaries["learning_rate"] = self._scheduler.get_last_lr()[0]
 
@@ -632,8 +873,8 @@ class QAttentionPerActBCAgent(Agent):
         q_trans_vis=True
         if step % self.cfg.framework.log_freq == 0  and rank == 0:
         # if step % 10 == 0 and rank == 0:
-            print(f"{arm}_arm_predict: {self._vis_max_coordinate}")
-            print(f"{arm}_gt: {self._vis_gt_coordinate}")
+            r2bc_debug_print(f"{arm}_arm_predict: {self._vis_max_coordinate}")
+            r2bc_debug_print(f"{arm}_gt: {self._vis_gt_coordinate}")
             rendered_img = visualise_voxel(
                 voxel_grid[0].cpu().detach().numpy(),    # [10, 100, 100, 100]
                 self._vis_translation_qvalue.detach().cpu().numpy() if q_trans_vis else None,
@@ -688,7 +929,19 @@ class QAttentionPerActBCAgent(Agent):
             summaries[k] = v
         return summaries
     
-    def act(self, step: int, observation: dict, deterministic=False) -> ActResult:
+    def act(self, step: int, observation: dict, deterministic=False, arm=None) -> ActResult:
+        if step == 0:
+            r2bc_debug_print("[debug act qattention] arm:", arm)
+            r2bc_debug_print(
+                "[debug act qattention] low_dim keys:",
+                [k for k in observation.keys() if "low_dim" in k]
+            )
+            if "low_dim_state" in observation:
+                r2bc_debug_print(
+                    "[debug act qattention] low_dim_state value:",
+                    observation["low_dim_state"].detach().cpu().flatten().numpy()
+                )
+            
         deterministic = True
         bounds = self._coordinate_bounds
         prev_layer_voxel_grid = observation.get("prev_layer_voxel_grid", None)
@@ -709,14 +962,55 @@ class QAttentionPerActBCAgent(Agent):
         proprio = None
 
         if self._include_low_dim_state:
-            proprio = observation["low_dim_state"]
+            arm_low_dim_key = f"{arm}_low_dim_state" if arm in ("right", "left") else None
+
+            if arm_low_dim_key is not None and arm_low_dim_key in observation:
+                proprio_key = arm_low_dim_key
+                proprio = observation[proprio_key]
+            else:
+                proprio_key = "low_dim_state"
+                proprio = observation[proprio_key]
+
+            if step == 0:
+                r2bc_debug_print("[debug act qattention] proprio_key:", proprio_key)
+                r2bc_debug_print("[debug act qattention] proprio shape:", tuple(proprio.shape))
+
             proprio = proprio[0].to(self._device)
 
         obs, pcd = self._act_preprocess_inputs(observation)
 
+        if step == 0:
+            r2bc_debug_print("[debug act qattention] after preprocess")
+            r2bc_debug_print(
+                "[debug act qattention] proprio after slice:",
+                None if proprio is None else tuple(proprio.shape)
+            )
+            for n in self._camera_names:
+                r2bc_debug_print(
+                    "[debug act qattention]",
+                    n,
+                    "rgb raw", tuple(observation[f"{n}_rgb"].shape),
+                    "pcd raw", tuple(observation[f"{n}_point_cloud"].shape),
+                )
+
         # correct batch size and device
         obs = [[o[0][0].to(self._device), o[1][0].to(self._device)] for o in obs]
         pcd = [p[0].to(self._device) for p in pcd]
+
+        if step == 0:
+            r2bc_debug_print("[debug act qattention] model input shapes")
+            r2bc_debug_print(
+                "[debug act qattention] proprio model:",
+                None if proprio is None else tuple(proprio.shape)
+            )
+            for i, n in enumerate(self._camera_names):
+                r2bc_debug_print(
+                    "[debug act qattention]",
+                    n,
+                    "rgb model", tuple(obs[i][0].shape),
+                    "pcd model", tuple(pcd[i].shape),
+                )
+
         lang_goal_emb = lang_goal_emb.to(self._device)
         lang_token_embs = lang_token_embs.to(self._device)
         bounds = torch.as_tensor(bounds, device=self._device)
@@ -732,7 +1026,7 @@ class QAttentionPerActBCAgent(Agent):
         )
 
         # inference
-        q_trans, q_rot_grip, q_ignore_collisions, vox_grid = self._q(
+        q_trans, q_rot_grip, q_ignore_collisions, vox_grid, _, _ = self._q(
             obs,
             proprio,
             pcd,
@@ -741,6 +1035,7 @@ class QAttentionPerActBCAgent(Agent):
             bounds,
             prev_layer_bounds,
             prev_layer_voxel_grid,
+            arm=arm,
         )
 
         # softmax Q predictions
@@ -770,6 +1065,14 @@ class QAttentionPerActBCAgent(Agent):
 
         coords = coords.int()
         attention_coordinate = bounds[:, :3] + res * coords + res / 2
+
+        if arm == "left":
+            r2bc_debug_print("[act trans debug] layer:", self._layer)
+            r2bc_debug_print("[act trans debug] arm:", arm)
+            r2bc_debug_print("[act trans debug] bounds:", bounds.detach().cpu().numpy())
+            r2bc_debug_print("[act trans debug] res:", res.detach().cpu().numpy() if hasattr(res, "detach") else res)
+            r2bc_debug_print("[act trans debug] coords:", coords.detach().cpu().numpy())
+            r2bc_debug_print("[act trans debug] attention_coordinate:", attention_coordinate.detach().cpu().numpy())
 
         # stack prev_layer_voxel_grid(s) into a list
         # NOTE: PerAct doesn't used multi-layer voxel grids like C2FARM
@@ -825,10 +1128,10 @@ class QAttentionPerActBCAgent(Agent):
             summaries.extend([ImageSummary("%s/crops/%s" % (self._name, name), crops)])
 
         for tag, param in self._q.named_parameters():
-            # assert not torch.isnan(param.grad.abs() <= 1.0).all()
-            summaries.append(
-                HistogramSummary("%s/gradient/%s" % (self._name, tag), param.grad)
-            )
+            if param.grad is not None:
+                summaries.append(
+                    HistogramSummary("%s/gradient/%s" % (self._name, tag), param.grad)
+                )
             summaries.append(
                 HistogramSummary("%s/weight/%s" % (self._name, tag), param.data)
             )
@@ -849,92 +1152,203 @@ class QAttentionPerActBCAgent(Agent):
             )
         ]
     def concat_weights(self, param, target_size, dims=-1):
-        if param.size(-1) < target_size:
-            param = torch.cat([param, param], dims)
+        """Repeat tensor along `dims` until that dimension reaches target_size.
+
+        Used to adapt pure PerAct 128-dim weights to AnyBimanual 256-dim
+        weights. The old implementation checked param.size(-1) even when
+        concatenating along dim=0, which could accidentally create 512-dim
+        tensors for decoder_cross_attn.to_out.
+        """
+        dim = dims
+        if dim < 0:
+            dim = param.dim() + dim
+
+        while param.size(dim) < target_size:
+            param = torch.cat([param, param], dim=dim)
+
+        if param.size(dim) > target_size:
+            slices = [slice(None)] * param.dim()
+            slices[dim] = slice(0, target_size)
+            param = param[tuple(slices)]
+
         return param
+
+    def adapt_tensor_to_shape(self, param, target_shape):
+        """Repeat checkpoint tensor along dimensions that need expansion.
+
+        This is used for loading pure PerAct weights into the AnyBimanual
+        architecture. Dimensions that already match the target are left
+        unchanged.
+        """
+        if tuple(param.shape) == tuple(target_shape):
+            return param
+
+        if param.dim() != len(target_shape):
+            return param
+
+        out = param
+        for dim, target_size in enumerate(target_shape):
+            if out.size(dim) == target_size:
+                continue
+
+            if out.size(dim) < target_size:
+                while out.size(dim) < target_size:
+                    out = torch.cat([out, out], dim=dim)
+
+                if out.size(dim) > target_size:
+                    slices = [slice(None)] * out.dim()
+                    slices[dim] = slice(0, target_size)
+                    out = out[tuple(slices)]
+            else:
+                return param
+
+        return out
     
     def load_weights(self, savedir: str):
-        device = (
-            self._device
-            if not self._training
-            else torch.device("cuda:%d" % self._device)
-        )
+        device = self._device
         weight_file = os.path.join(savedir, "%s.pt" % self._name)
         state_dict = torch.load(weight_file, map_location=device)
 
         # load only keys that are in the current model
-        merged_state_dict = self._q.state_dict()
-        if not self._training:
-            for k, v in state_dict.items():
-                if not self._training:
-                    k = k.replace("_qnet.module", "_qnet")
-                if k in merged_state_dict:
-                    merged_state_dict[k] = v
-                else:
-                    if "_voxelizer" not in k:
-                        logging.warning("key %s not found in checkpoint" % k)
-        else:
-            for k, v in state_dict.items():
-                if not self._training:
-                    k = k.replace("_qnet.module", "_qnet")
-                elif k == "_qnet.module.pos_encoding":
-                    if (v.shape[1] != 8077 or v.shape[1] != 8154) and v.shape[1] < 154:
-                        if self.anybimanual:
-                            lang_max_seq_len = 154
-                        else:
-                            lang_max_seq_len = 77
-                        spatial_size = v.shape[1]
-                        input_dim_before_seq = v.shape[-1]
-                        flattened_v = v.view(1, -1, input_dim_before_seq)  # (1, spatial_size**3, self.input_dim_before_seq)
-                        new_pos_encoding = torch.randn(1, lang_max_seq_len, input_dim_before_seq, device=device)
-                        merged_pos_encoding = torch.cat([flattened_v, new_pos_encoding], dim=1)  # (1, lang_max_seq_len + spatial_size**3, self.input_dim_before_seq)
-                        merged_state_dict["_qnet.module.pos_encoding"] = merged_pos_encoding
+        # Keep a copy of the current model state so shape-mismatched checkpoint
+        # tensors can be safely skipped while preserving current initialization.
+        current_state_dict = self._q.state_dict()
+        merged_state_dict = dict(current_state_dict)
+        qnet_is_ddp = isinstance(self._q._qnet, DDP)
+
+        def to_model_key(k: str) -> str:
+            """Convert checkpoint key to current model key.
+
+            Checkpoints may have _qnet.module.* when saved with DDP.
+            Current debug/training with ddp.num_devices=1 uses _qnet.*.
+            """
+            if qnet_is_ddp:
+                if k.startswith("_qnet.") and not k.startswith("_qnet.module."):
+                    return k.replace("_qnet.", "_qnet.module.", 1)
+                return k
+            else:
+                if k.startswith("_qnet.module."):
+                    return k.replace("_qnet.module.", "_qnet.", 1)
+                return k
+
+        module_prefix = "_qnet.module." if qnet_is_ddp else "_qnet."
+
+        skip_anybimanual_modules = (
+            os.environ.get("R2BC_RANDOM_INIT_ANYBIMANUAL", "0") == "1"
+        )
+        skipped_anybimanual_keys = 0
+        skipped_shape_mismatch_keys = 0
+
+        for raw_k, v in state_dict.items():
+            # Voxelizer buffers depend on current batch size.
+            # They are initialized in build(), so do not load them from checkpoints.
+            if raw_k.startswith("_voxelizer"):
+                continue
+
+            k = to_model_key(raw_k)
+
+            # Keep Skill Manager / Visual Aligner randomly initialized.
+            # They were already created in create_agent(); skipping checkpoint keys
+            # prevents pretrained AnyBimanual modules from overwriting them.
+            if skip_anybimanual_modules and (
+                "skill_manager" in k or "visual_aligner" in k
+            ):
+                skipped_anybimanual_keys += 1
+                continue
+
+            # pos encoding shape conversion for AnyBimanual
+            if k == module_prefix + "pos_encoding":
+                if (v.shape[1] != 8077 or v.shape[1] != 8154) and v.shape[1] < 154:
+                    if self.anybimanual:
+                        lang_max_seq_len = 154
                     else:
-                        merged_state_dict["_qnet.module.pos_encoding"] = v
-                elif k.startswith("_qnet.module.cross_attend_blocks"):
-                    if self.anybimanual:
-                        if v.size(-1) == 128:
-                            merged_state_dict[k] = self.concat_weights(v, 256)
-                elif k.startswith("_qnet.module.decoder_cross_attn"):
-                    if self.anybimanual:
-                        if v.size(0) == 128:
-                            merged_state_dict[k] = self.concat_weights(v, 256, 0)
-                            merged_state_dict[k] = self.concat_weights(v, 256, 0)
-                        if v.size(-1) == 128:
-                            merged_state_dict[k] = self.concat_weights(v, 256)
-                            merged_state_dict[k] = self.concat_weights(v, 256)
-                elif k == "_qnet.module.up0.conv_up.0.conv3d.weight":
-                    if self.anybimanual:
-                        if v.size(1) == 128:
-                            merged_state_dict[k] = self.concat_weights(v, 256, 1)
-                elif k.startswith("_qnet.module.dense0"):
-                    if self.anybimanual:
-                        if v.size(-1) == 1024:
-                            merged_state_dict[k] = torch.cat([v, v[:, :512]], dim=-1)
+                        lang_max_seq_len = 77
+
+                    spatial_size = v.shape[1]
+                    input_dim_before_seq = v.shape[-1]
+                    flattened_v = v.view(1, -1, input_dim_before_seq)
+
+                    new_pos_encoding = torch.randn(
+                        1,
+                        lang_max_seq_len,
+                        input_dim_before_seq,
+                        device=device,
+                    )
+
+                    merged_pos_encoding = torch.cat(
+                        [flattened_v, new_pos_encoding],
+                        dim=1,
+                    )
+
+                    merged_state_dict[module_prefix + "pos_encoding"] = merged_pos_encoding
+                else:
+                    merged_state_dict[module_prefix + "pos_encoding"] = v
+
+            elif k.startswith(module_prefix + "cross_attend_blocks"):
+                if self.anybimanual and v.size(-1) == 128:
+                    merged_state_dict[k] = self.concat_weights(v, 256)
                 elif k in merged_state_dict:
                     merged_state_dict[k] = v
-                else:
-                    if "_voxelizer" not in k:
-                        logging.warning("key %s not found in checkpoint" % k)
 
-        # if not self._training:
-        # reshape voxelizer weights
-        b = merged_state_dict["_voxelizer._ones_max_coords"].shape[0]
-        merged_state_dict["_voxelizer._ones_max_coords"] = merged_state_dict[
-            "_voxelizer._ones_max_coords"
-        ][0:1]
-        flat_shape = merged_state_dict["_voxelizer._flat_output"].shape[0]
-        merged_state_dict["_voxelizer._flat_output"] = merged_state_dict[
-            "_voxelizer._flat_output"
-        ][0 : flat_shape // b]
-        merged_state_dict["_voxelizer._tiled_batch_indices"] = merged_state_dict[
-            "_voxelizer._tiled_batch_indices"
-        ][0:1]
-        merged_state_dict["_voxelizer._index_grid"] = merged_state_dict[
-            "_voxelizer._index_grid"
-        ][0:1]
+            elif k.startswith(module_prefix + "decoder_cross_attn"):
+                if self.anybimanual and k in merged_state_dict:
+                    merged_state_dict[k] = self.adapt_tensor_to_shape(
+                        v, current_state_dict[k].shape
+                    )
+                elif k in merged_state_dict:
+                    merged_state_dict[k] = v
+
+            elif k == module_prefix + "up0.conv_up.0.conv3d.weight":
+                if self.anybimanual and v.size(1) == 128:
+                    merged_state_dict[k] = self.concat_weights(v, 256, 1)
+                elif k in merged_state_dict:
+                    merged_state_dict[k] = v
+
+            elif k.startswith(module_prefix + "dense0"):
+                if self.anybimanual and v.size(-1) == 1024:
+                    merged_state_dict[k] = torch.cat([v, v[:, :512]], dim=-1)
+                elif k in merged_state_dict:
+                    merged_state_dict[k] = v
+
+            elif k in merged_state_dict:
+                merged_state_dict[k] = v
+
+            else:
+                logging.warning("key %s not found in checkpoint", k)
+
+        if skip_anybimanual_modules:
+            r2bc_debug_print(
+                "[load_weights] R2BC_RANDOM_INIT_ANYBIMANUAL=1: "
+                f"skipped {skipped_anybimanual_keys} "
+                "skill_manager/visual_aligner checkpoint keys"
+            )
+
+        # Some PerAct checkpoints have slightly different architecture dimensions.
+        # If a checkpoint tensor shape does not match the current model tensor shape,
+        # keep the current model initialization for that key instead of crashing.
+        for k in list(merged_state_dict.keys()):
+            if k not in current_state_dict:
+                continue
+
+            if merged_state_dict[k].shape != current_state_dict[k].shape:
+                r2bc_debug_print(
+                    "[load_weights] skip shape mismatch:",
+                    k,
+                    "ckpt", tuple(merged_state_dict[k].shape),
+                    "model", tuple(current_state_dict[k].shape),
+                )
+                merged_state_dict[k] = current_state_dict[k]
+                skipped_shape_mismatch_keys += 1
+
+        if skipped_shape_mismatch_keys > 0:
+            r2bc_debug_print(
+                "[load_weights] skipped "
+                f"{skipped_shape_mismatch_keys} shape-mismatch checkpoint keys"
+            )
+
         self._q.load_state_dict(merged_state_dict)
-        print("loaded weights from %s" % weight_file)
+        r2bc_debug_print("loaded weights from %s" % weight_file)
+
 
     def save_weights(self, savedir: str):
         torch.save(self._q.state_dict(), os.path.join(savedir, "%s.pt" % self._name))

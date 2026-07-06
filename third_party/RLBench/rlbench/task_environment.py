@@ -122,7 +122,8 @@ class TaskEnvironment(object):
                   callable_each_step: Callable[[Observation], None] = None,
                   max_attempts: int = _MAX_DEMO_ATTEMPTS,
                   random_selection: bool = True,
-                  from_episode_number: int = 0
+                  from_episode_number: int = 0, 
+                  allow_unsuccessful: bool = False
                   ) -> List[Demo]:
         """Negative means all demos"""
 
@@ -144,7 +145,9 @@ class TaskEnvironment(object):
             ctr_loop = self._robot.arm.joints[0].is_control_loop_enabled()
             self._robot.arm.set_control_loop_enabled(True)
             demos = self._get_live_demos(
-                amount, callable_each_step, max_attempts)
+                amount, callable_each_step, max_attempts, 
+                allow_unsuccessful=allow_unsuccessful
+            )
             self._robot.arm.set_control_loop_enabled(ctr_loop)
         elif self._robot.is_bimanual:
             ctr_loop_right = self._robot.right_arm.joints[0].is_control_loop_enabled()
@@ -152,7 +155,9 @@ class TaskEnvironment(object):
             self._robot.right_arm.set_control_loop_enabled(True)
             self._robot.left_arm.set_control_loop_enabled(True)
             demos = self._get_live_demos(
-                amount, callable_each_step, max_attempts)
+                amount, callable_each_step, max_attempts, 
+                allow_unsuccessful=allow_unsuccessful
+            )
             self._robot.right_arm.set_control_loop_enabled(ctr_loop_right)
             self._robot.left_arm.set_control_loop_enabled(ctr_loop_left)
 
@@ -161,7 +166,8 @@ class TaskEnvironment(object):
     def _get_live_demos(self, amount: int,
                         callable_each_step: Callable[
                             [Observation], None] = None,
-                        max_attempts: int = _MAX_DEMO_ATTEMPTS) -> List[Demo]:
+                        max_attempts: int = _MAX_DEMO_ATTEMPTS, 
+                        allow_unsuccessful: bool = False) -> List[Demo]:
         demos = []
         for i in range(amount):
             attempts = max_attempts
@@ -170,7 +176,8 @@ class TaskEnvironment(object):
                 self.reset()
                 try:
                     demo = self._scene.get_demo(
-                        callable_each_step=callable_each_step)
+                        callable_each_step=callable_each_step,
+                        allow_unsuccessful=allow_unsuccessful)
                     demo.random_seed = random_seed
                     demos.append(demo)
                     break

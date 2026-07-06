@@ -12,7 +12,7 @@ rlbench:
     scene_bounds: [-0.3, -0.5, 0.6, 0.7, 0.5, 1.6]
     include_lang_goal_in_obs: True
     time_in_state: True
-    headless: True
+    headless: False
     gripper_mode: 'Discrete'
     arm_action_mode: 'EndEffectorPoseViaPlanning'
     action_mode: 'MoveArmThenGripper'

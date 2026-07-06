@@ -8,7 +8,17 @@ import numpy as np
 from helpers import utils
 from agents.peract_bc.qattention_peract_bc_agent import QAttentionPerActBCAgent
 
+import os
+
 NAME = "QAttentionStackAgent"
+
+def r2bc_debug_enabled() -> bool:
+    return os.environ.get("R2BC_VERBOSE_DEBUG", "0") == "1"
+
+
+def r2bc_debug_print(*args, **kwargs):
+    if r2bc_debug_enabled():
+        print(*args, **kwargs)
 
 
 class QAttentionStackAgent(Agent):
@@ -43,12 +53,12 @@ class QAttentionStackAgent(Agent):
             "total_losses": total_losses,
         }
 
-    def act(self, step: int, observation: dict, deterministic=False) -> ActResult:
+    def act(self, step: int, observation: dict, deterministic=False, arm=None) -> ActResult:
         observation_elements = {}
         translation_results, rot_grip_results, ignore_collisions_results = [], [], []
         infos = {}
         for depth, qagent in enumerate(self._qattention_agents):
-            act_results = qagent.act(step, observation, deterministic)
+            act_results = qagent.act(step, observation, deterministic, arm=arm)
             attention_coordinate = (
                 act_results.observation_elements["attention_coordinate"].cpu().numpy()
             )
@@ -91,6 +101,12 @@ class QAttentionStackAgent(Agent):
         ignore_collisions = float(
             torch.cat(ignore_collisions_results, 1)[0].cpu().numpy()
         )
+
+        r2bc_debug_print("[qstack debug] arm:", arm)
+        r2bc_debug_print("[qstack debug] rgai:", rgai)
+        r2bc_debug_print("[qstack debug] rot_idx:", rgai[-4:-1])
+        r2bc_debug_print("[qstack debug] grip_idx:", rgai[-1])
+
         observation_elements["trans_action_indicies"] = (
             torch.cat(translation_results, 1)[0].cpu().numpy()
         )
@@ -107,6 +123,10 @@ class QAttentionStackAgent(Agent):
                 [ignore_collisions],
             ]
         )
+
+        r2bc_debug_print("[qstack debug] continuous_action:", continuous_action)
+        r2bc_debug_print("[qstack debug] continuous_gripper_open:", continuous_action[7])
+
         return ActResult(
             continuous_action, observation_elements=observation_elements, info=infos
         )

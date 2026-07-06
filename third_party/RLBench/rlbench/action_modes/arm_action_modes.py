@@ -430,22 +430,42 @@ class BimanualEndEffectorPoseViaPlanning(EndEffectorPoseViaPlanning):
         right_done = True
         left_done = True
         try:
-            right_path = self.get_path(scene, right_action, right_ignore_collision, scene.robot.right_arm, scene.robot.right_gripper)
+            # print("[BimanualEEPlanning] right_action:", right_action)
+            # print("[BimanualEEPlanning] right_ignore_collision:", right_ignore_collision)
+            right_path = self.get_path(
+                scene,
+                right_action,
+                right_ignore_collision,
+                scene.robot.right_arm,
+                scene.robot.right_gripper,
+            )
             if right_path:
+                # print("[BimanualEEPlanning] right path found")
                 right_done = False
             else:
+                # print("[BimanualEEPlanning] right path is None")
                 logging.warning("right path is none")
-        except (ConfigurationPathError, InvalidActionError):
-            pass
+        except (ConfigurationPathError, InvalidActionError) as e:
+            print("[BimanualEEPlanning] right path failed:", repr(e))
         
         try:
-            left_path = self.get_path(scene, left_action, left_ignore_collison, scene.robot.left_arm, scene.robot.left_gripper)
+            # print("[BimanualEEPlanning] left_action:", left_action)
+            # print("[BimanualEEPlanning] left_ignore_collision:", left_ignore_collison)
+            left_path = self.get_path(
+                scene,
+                left_action,
+                left_ignore_collison,
+                scene.robot.left_arm,
+                scene.robot.left_gripper,
+            )
             if left_path:
+                # print("[BimanualEEPlanning] left path found")
                 left_done = False
             else:
+                # print("[BimanualEEPlanning] left path is None")
                 logging.warning("left path is none")
-        except (ConfigurationPathError, InvalidActionError):
-            pass
+        except (ConfigurationPathError, InvalidActionError) as e:
+            print("[BimanualEEPlanning] left path failed:", repr(e))
         
 
         done = False
