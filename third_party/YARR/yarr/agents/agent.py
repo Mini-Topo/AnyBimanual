@@ -142,8 +142,8 @@ class BimanualAgent(Agent):
                 right_observation[k] = v
                 left_observation[k] = v
 
-        right_act_result = self.right_agent.act(step, right_observation, deterministic)
-        left_act_result = self.left_agent.act(step, left_observation,deterministic)
+        right_act_result = self.right_agent.act(step, right_observation, deterministic, arm="right")
+        left_act_result = self.left_agent.act(step, left_observation, deterministic, arm="left")
         action = (*right_act_result.action, *left_act_result.action)
 
         observation_elements.update(right_act_result.observation_elements)

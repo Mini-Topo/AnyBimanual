@@ -2,11 +2,70 @@
 # Source: https://github.com/lucidrains/perceiver-pytorch
 # License: https://github.com/lucidrains/perceiver-pytorch/blob/main/LICENSE
 
+import os
 import torch
 from torch import nn
 
 from einops import rearrange
 from einops import repeat
+
+def _r2bc_scale_stat(name, x):
+    if not torch.is_tensor(x):
+        print(f"[scale debug] {name}: non-tensor {type(x)}")
+        return
+    xd = x.detach().float()
+    print(
+        f"[scale debug] {name}: "
+        f"shape={tuple(xd.shape)} "
+        f"mean={xd.mean().item():+.4e} "
+        f"std={xd.std().item():+.4e} "
+        f"min={xd.min().item():+.4e} "
+        f"max={xd.max().item():+.4e}"
+    )
+
+def _r2bc_diff_stat(name, a, b):
+    if not torch.is_tensor(a) or not torch.is_tensor(b):
+        print(f"[diff debug] {name}: non-tensor a={type(a)} b={type(b)}")
+        return
+
+    if tuple(a.shape) != tuple(b.shape):
+        print(
+            f"[diff debug] {name}: shape mismatch "
+            f"a_shape={tuple(a.shape)} b_shape={tuple(b.shape)}"
+        )
+        return
+
+    ad = a.detach().float()
+    bd = b.detach().float()
+    d = ad - bd
+
+    a_norm = ad.norm().item()
+    b_norm = bd.norm().item()
+    d_norm = d.norm().item()
+    rel_to_a = d_norm / (a_norm + 1e-12)
+    rel_to_b = d_norm / (b_norm + 1e-12)
+
+    cos = torch.nn.functional.cosine_similarity(
+        ad.reshape(1, -1),
+        bd.reshape(1, -1),
+        dim=1,
+    ).item()
+
+    print(
+        f"[diff debug] {name}: "
+        f"shape={tuple(ad.shape)} "
+        f"diff_mean={d.mean().item():+.4e} "
+        f"diff_std={d.std().item():+.4e} "
+        f"diff_abs_mean={d.abs().mean().item():+.4e} "
+        f"diff_abs_max={d.abs().max().item():+.4e} "
+        f"a_norm={a_norm:+.4e} "
+        f"b_norm={b_norm:+.4e} "
+        f"diff_norm={d_norm:+.4e} "
+        f"rel_to_a={rel_to_a:+.4e} "
+        f"rel_to_b={rel_to_b:+.4e} "
+        f"cos={cos:+.4e}"
+    )
+
 import torch.nn.functional as F
 from perceiver_pytorch.perceiver_pytorch import cache_fn
 from perceiver_pytorch.perceiver_pytorch import PreNorm, FeedForward, Attention
@@ -379,29 +438,137 @@ class PerceiverVoxelLangEncoder(nn.Module):
         # rearrange input to be channel last
         ins = rearrange(ins, "b ... d -> b (...) d")  # [B,8000,128]
         ins_wo_prev_layers = ins
+
+        L_skill = torch.tensor(0.0, device=ins.device, dtype=ins.dtype)
+        L_voxel = torch.tensor(0.0, device=ins.device, dtype=ins.dtype)
+
         # option 2: add lang token embs as a sequence
         if self.anybimanual:
+            debug_scale = os.environ.get("R2BC_SCALE_DEBUG", "0") == "1"
+
+            if debug_scale:
+                _r2bc_scale_stat("perceiver/ins_before_anybimanual", ins)
+                _r2bc_scale_stat("perceiver/lang_token_embs_raw", lang_token_embs)
+
             l = self.lang_preprocess(lang_token_embs)  # [B,77,512] -> [B,77,128]
+
+            if debug_scale:
+                _r2bc_scale_stat("perceiver/l_after_lang_preprocess", l)
+
             mask_right, mask_left = self.visual_aligner(ins)
-            L_voxel = symmetric_kl_divergence(mask_left, mask_right)
-            right_skill = self.skill_manager(mask_right, l)
-            left_skill = self.skill_manager(mask_left, l)
-            right_skill = self.lang_preprocess(right_skill)
-            left_skill = self.lang_preprocess(left_skill)
-            L_skill = (
-                l1_norm(left_skill) + l1_norm(right_skill) + 
-                0.01 * (l2_1_norm(left_skill) + l2_1_norm(right_skill))
-            )
-            l_right = torch.cat((right_skill, l), dim=1)
+
+            if os.environ.get("R2BC_ABLATE_VISUAL_ALIGNER", "0") == "1":
+                mask_right = ins
+                mask_left = ins
+            else:
+                alpha = float(os.environ.get("R2BC_VISUAL_ALIGNER_ALPHA", "1.0"))
+                if alpha != 1.0:
+                    mask_right = ins + alpha * (mask_right - ins)
+                    mask_left = ins + alpha * (mask_left - ins)
+
+            if debug_scale:
+                _r2bc_scale_stat("perceiver/mask_right_from_visual_aligner", mask_right)
+                _r2bc_scale_stat("perceiver/mask_left_from_visual_aligner", mask_left)
+                _r2bc_diff_stat("perceiver/mask_right_minus_ins", mask_right, ins)
+                _r2bc_diff_stat("perceiver/mask_left_minus_ins", mask_left, ins)
+                _r2bc_diff_stat("perceiver/mask_left_minus_mask_right", mask_left, mask_right)
+
+            if os.environ.get("R2BC_ABLATE_SKILL_MANAGER", "0") == "1":
+                right_skill_before = lang_token_embs
+                left_skill_before = lang_token_embs
+            else:
+                right_skill_before = self.skill_manager(mask_right, l)
+                left_skill_before = self.skill_manager(mask_left, l)
+
+            # L_voxel = symmetric_kl_divergence(mask_left, mask_right)
+            L_voxel = torch.tensor(0.0, device=ins.device, dtype=ins.dtype)
+
+            if debug_scale:
+                _r2bc_scale_stat("perceiver/right_skill_before_lang_preprocess", right_skill_before)
+                _r2bc_scale_stat("perceiver/left_skill_before_lang_preprocess", left_skill_before)
+                _r2bc_diff_stat(
+                    "perceiver/left_skill_before_minus_right_skill_before",
+                    left_skill_before,
+                    right_skill_before,
+                )
+                _r2bc_diff_stat(
+                    "perceiver/left_skill_before_minus_raw_lang",
+                    left_skill_before,
+                    lang_token_embs,
+                )
+                _r2bc_diff_stat(
+                    "perceiver/right_skill_before_minus_raw_lang",
+                    right_skill_before,
+                    lang_token_embs,
+                )
+
+            right_skill = self.lang_preprocess(right_skill_before)
+            left_skill = self.lang_preprocess(left_skill_before)
+
+            if debug_scale:
+                _r2bc_scale_stat("perceiver/right_skill_after_lang_preprocess", right_skill)
+                _r2bc_scale_stat("perceiver/left_skill_after_lang_preprocess", left_skill)
+                _r2bc_diff_stat(
+                    "perceiver/left_skill_after_minus_right_skill_after",
+                    left_skill,
+                    right_skill,
+                )
+                _r2bc_diff_stat(
+                    "perceiver/left_skill_after_minus_l",
+                    left_skill,
+                    l,
+                )
+                _r2bc_diff_stat(
+                    "perceiver/right_skill_after_minus_l",
+                    right_skill,
+                    l,
+                )
+
+            # L_skill = (
+            #     l1_norm(left_skill) + l1_norm(right_skill) + 
+            #     0.01 * (l2_1_norm(left_skill) + l2_1_norm(right_skill))
+            # )
+            L_skill = torch.tensor(0.0, device=ins.device, dtype=ins.dtype)
+            drop_raw_lang = os.environ.get("R2BC_DROP_RAW_LANG_IN_ANYBIMANUAL", "0") == "1"
+
+            if drop_raw_lang:
+                raw_l_right = torch.zeros_like(l)
+                raw_l_left = torch.zeros_like(l)
+            else:
+                raw_l_right = l
+                raw_l_left = l
+
+            l_right = torch.cat((right_skill, raw_l_right), dim=1)
             ins_right = torch.cat((l_right, mask_right), dim=1)
-            l_left = torch.cat((left_skill, l), dim=1)
+
+            l_left = torch.cat((left_skill, raw_l_left), dim=1)
             ins_left = torch.cat((l_left, mask_left), dim=1)
+
+            if debug_scale:
+                base_l = torch.cat((l, l), dim=1)
+                base_ins = torch.cat((base_l, ins), dim=1)
+
+                _r2bc_diff_stat("perceiver/ins_right_minus_base_ins", ins_right, base_ins)
+                _r2bc_diff_stat("perceiver/ins_left_minus_base_ins", ins_left, base_ins)
+                _r2bc_diff_stat("perceiver/ins_left_minus_ins_right", ins_left, ins_right)
+
+            if debug_scale:
+                _r2bc_scale_stat("perceiver/l_right_concat", l_right)
+                _r2bc_scale_stat("perceiver/ins_right_concat", ins_right)
+                _r2bc_scale_stat("perceiver/l_left_concat", l_left)
+                _r2bc_scale_stat("perceiver/ins_left_concat", ins_left)
+                _r2bc_scale_stat("perceiver/L_voxel", L_voxel)
+                _r2bc_scale_stat("perceiver/L_skill", L_skill)
+
             if arm == "right":
                 skill = right_skill
                 ins_ = ins_right
-            else:
+            elif arm == "left":
                 skill = left_skill
                 ins_ = ins_left
+            else:
+                raise ValueError(f"arm must be 'right' or 'left' when anybimanual=True, got {arm}")
+                
             if self.pos_encoding_with_lang:
                 ins_ = ins_ + self.pos_encoding
         else:
@@ -478,4 +645,4 @@ class PerceiverVoxelLangEncoder(nn.Module):
             ]
             collision_out = rot_and_grip_collision_out[:, -self.num_collision_classes :]
 
-        return trans, rot_and_grip_out, collision_out
+        return trans, rot_and_grip_out, collision_out, L_skill, L_voxel

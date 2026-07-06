@@ -451,9 +451,10 @@ def simSetBoolParameter(parameter, value):
 
 
 def simGetInt32Parameter(parameter):
-    ret = lib.simGetInt32Parameter(parameter)
+    value = ffi.new('int *')
+    ret = lib.simGetInt32Parameter(parameter, value)
     _check_return(ret)
-    return ret
+    return value[0]
 
 
 def simSetInt32Parameter(parameter, value):

@@ -7,6 +7,7 @@ from operator import mul
 
 import torch
 from torch import nn
+import numpy as np
 
 MIN_DENOMINATOR = 1e-12
 INCLUDE_PER_VOXEL_COORD = False
@@ -165,10 +166,25 @@ class VoxelGrid(nn.Module):
     def _scatter_nd(self, indices, updates):
         indices_shape = indices.shape
         num_index_dims = indices_shape[-1]
+
+        # Actual batch size from indices.
+        # indices[:, 0] is batch index after flattening [B*N, 4].
+        actual_batch_size = int(indices[..., 0].max().item()) + 1
+
+        # self._result_dim_sizes / self._total_dims_list were created with
+        # configured batch size. Replace only the batch dimension dynamically.
+        total_dims_list = list(self._total_dims_list)
+        total_dims_list[0] = actual_batch_size
+
+        result_dim_sizes = self._result_dim_sizes.clone()
+        result_dim_sizes[0] = int(np.prod(total_dims_list[1:]))
+
         flat_updates = updates.view((-1,))
-        indices_scales = self._result_dim_sizes[0:num_index_dims].view(
+
+        indices_scales = result_dim_sizes[0:num_index_dims].view(
             [1] * (len(indices_shape) - 1) + [num_index_dims]
         )
+
         indices_for_flat_tiled = (
             ((indices * indices_scales).sum(dim=-1, keepdims=True))
             .view(-1, 1)
@@ -180,13 +196,23 @@ class VoxelGrid(nn.Module):
             .unsqueeze(0)
             .repeat(*[indices_for_flat_tiled.shape[0], 1])
         )
+
         indices_for_flat = indices_for_flat_tiled + implicit_indices
         flat_indices_for_flat = indices_for_flat.view((-1,)).long()
 
-        flat_scatter = self._scatter_mean(
-            flat_updates, flat_indices_for_flat, out=torch.zeros_like(self._flat_output)
+        flat_output = torch.zeros(
+            int(np.prod(total_dims_list)),
+            dtype=updates.dtype,
+            device=updates.device,
         )
-        return flat_scatter.view(self._total_dims_list)
+
+        flat_scatter = self._scatter_mean(
+            flat_updates,
+            flat_indices_for_flat,
+            out=flat_output,
+        )
+
+        return flat_scatter.view(total_dims_list)
 
     def coords_to_bounding_voxel_grid(
         self, coords, coord_features=None, coord_bounds=None
@@ -213,15 +239,40 @@ class VoxelGrid(nn.Module):
         if coord_features is not None:
             voxel_values = torch.cat([voxel_values, coord_features], -1)
 
-        _, num_coords, _ = voxel_indices.shape
-        # BS x N x (num_batch_dims + 2)
-        all_indices = torch.cat(
-            [self._tiled_batch_indices[:, :num_coords], voxel_indices], -1
+        bs, num_coords, _ = voxel_indices.shape
+
+        # BS x N x 1
+        # NOTE:
+        # self._tiled_batch_indices was created with the configured batch_size.
+        # In R2BC train-only overfit, actual batch size can be different.
+        # So create batch indices dynamically from voxel_indices.
+        batch_indices = (
+            torch.arange(
+                bs,
+                device=voxel_indices.device,
+                dtype=voxel_indices.dtype,
+            )
+            .view(bs, 1, 1)
+            .repeat(1, num_coords, 1)
         )
 
-        # BS x N x 4
+        # BS x N x 4 = [batch_idx, x, y, z]
+        all_indices = torch.cat(
+            [batch_indices, voxel_indices], -1
+        )
+
+        ones_max_coords = self._ones_max_coords
+        if ones_max_coords.shape[0] != bs:
+            ones_max_coords = ones_max_coords[:1].repeat(bs, 1, 1)
+
+        ones_max_coords = ones_max_coords[:, :num_coords].to(
+            device=voxel_values.device,
+            dtype=voxel_values.dtype,
+        )
+
+        # BS x N x voxel_feature_size
         voxel_values_pruned_flat = torch.cat(
-            [voxel_values, self._ones_max_coords[:, :num_coords]], -1
+            [voxel_values, ones_max_coords], -1
         )
 
         # BS x x_max x y_max x z_max x 4
@@ -232,8 +283,12 @@ class VoxelGrid(nn.Module):
 
         vox = scattered[:, 1:-1, 1:-1, 1:-1]
         if INCLUDE_PER_VOXEL_COORD:
+            index_grid_full = self._index_grid
+            if index_grid_full.shape[0] != vox.shape[0]:
+                index_grid_full = index_grid_full[:1].repeat(vox.shape[0], 1, 1, 1, 1)
+
             res_expanded = res.unsqueeze(1).unsqueeze(1).unsqueeze(1)
-            res_centre = (res_expanded * self._index_grid) + res_expanded / 2.0
+            res_centre = (res_expanded * index_grid_full) + res_expanded / 2.0
             coord_positions = (
                 res_centre + bb_mins_shifted.unsqueeze(1).unsqueeze(1).unsqueeze(1)
             )[:, 1:-1, 1:-1, 1:-1]
@@ -242,10 +297,15 @@ class VoxelGrid(nn.Module):
         occupied = (vox[..., -1:] > 0).float()
         vox = torch.cat([vox[..., :-1], occupied], -1)
 
+        index_grid = self._index_grid[:, :-2, :-2, :-2] / self._voxel_d
+
+        if index_grid.shape[0] != vox.shape[0]:
+            index_grid = index_grid[:1].repeat(vox.shape[0], 1, 1, 1, 1)
+
         return torch.cat(
             [
                 vox[..., :-1],
-                self._index_grid[:, :-2, :-2, :-2] / self._voxel_d,
+                index_grid,
                 vox[..., -1:],
             ],
             -1,

@@ -302,6 +302,33 @@ class BimanualDiscrete(Discrete):
         right_action = float(action[0] > 0.5)
         left_action = float(action[1] > 0.5)
 
+
+        right_open_amount = scene.robot.right_gripper.get_open_amount()
+        left_open_amount = scene.robot.left_gripper.get_open_amount()
+
+        right_grasped_before = [
+            obj.get_name() for obj in scene.robot.right_gripper.get_grasped_objects()
+        ]
+        left_grasped_before = [
+            obj.get_name() for obj in scene.robot.left_gripper.get_grasped_objects()
+        ]
+
+        print(
+            "[BimanualDiscrete debug] "
+            f"raw_action={action} "
+            f"right_open_amount={right_open_amount} "
+            f"left_open_amount={left_open_amount} "
+            f"right_current_ee={right_current_ee} "
+            f"left_current_ee={left_current_ee} "
+            f"right_action={right_action} "
+            f"left_action={left_action} "
+            f"right_will_change={right_current_ee != right_action} "
+            f"left_will_change={left_current_ee != left_action} "
+            f"right_grasped_before={right_grasped_before} "
+            f"left_grasped_before={left_grasped_before}"
+        )
+
+
         if right_current_ee != right_action or left_current_ee != left_action:
             if not self._detach_before_open:
                 self._actuate(scene, action)
@@ -311,25 +338,72 @@ class BimanualDiscrete(Discrete):
             if right_action == 0.0 and self._attach_grasped_objects:
                 # If gripper close action, the check for grasp.
                 left_grasped_objects = scene.robot.left_gripper.get_grasped_objects()
+
+                print(
+                    "[BimanualDiscrete grasp debug] RIGHT close branch "
+                    f"left_grasped={[obj.get_name() for obj in left_grasped_objects]}"
+                )
+
                 for g_obj in scene.task.get_graspable_objects():
                     if g_obj in left_grasped_objects:
-                        logging.warning("Object with name %s is already grasped by left robot", g_obj.get_name())
+                        logging.warning(
+                            "Object with name %s is already grasped by left robot",
+                            g_obj.get_name(),
+                        )
+                        print(
+                            "[BimanualDiscrete grasp debug] RIGHT skipped "
+                            f"obj={g_obj.get_name()} because already grasped by LEFT"
+                        )
                     else:
-                        scene.robot.right_gripper.grasp(g_obj)
+                        print(
+                            "[BimanualDiscrete grasp debug] RIGHT trying "
+                            f"obj={g_obj.get_name()}"
+                        )
+                        detected = scene.robot.right_gripper.grasp(g_obj)
+                        print(
+                            "[BimanualDiscrete grasp debug] RIGHT result "
+                            f"obj={g_obj.get_name()} detected={detected} "
+                            f"right_after={[obj.get_name() for obj in scene.robot.right_gripper.get_grasped_objects()]} "
+                            f"left_after={[obj.get_name() for obj in scene.robot.left_gripper.get_grasped_objects()]}"
+                        )
             else:
-                # If gripper open action, the check for un-grasp.
+                print("[BimanualDiscrete grasp debug] RIGHT release")
                 scene.robot.right_gripper.release()
+
         if left_current_ee != left_action:
             if left_action == 0.0 and self._attach_grasped_objects:
                 right_grasped_objects = scene.robot.right_gripper.get_grasped_objects()
-                # If gripper close action, the check for grasp.                
+
+                print(
+                    "[BimanualDiscrete grasp debug] LEFT close branch "
+                    f"right_grasped={[obj.get_name() for obj in right_grasped_objects]}"
+                )
+
+                # If gripper close action, the check for grasp.
                 for g_obj in scene.task.get_graspable_objects():
                     if g_obj in right_grasped_objects:
-                        logging.warning("Object with name %s is already grasped by right robot", g_obj.get_name())
+                        logging.warning(
+                            "Object with name %s is already grasped by right robot",
+                            g_obj.get_name(),
+                        )
+                        print(
+                            "[BimanualDiscrete grasp debug] LEFT skipped "
+                            f"obj={g_obj.get_name()} because already grasped by RIGHT"
+                        )
                     else:
-                        scene.robot.left_gripper.grasp(g_obj)
+                        print(
+                            "[BimanualDiscrete grasp debug] LEFT trying "
+                            f"obj={g_obj.get_name()}"
+                        )
+                        detected = scene.robot.left_gripper.grasp(g_obj)
+                        print(
+                            "[BimanualDiscrete grasp debug] LEFT result "
+                            f"obj={g_obj.get_name()} detected={detected} "
+                            f"right_after={[obj.get_name() for obj in scene.robot.right_gripper.get_grasped_objects()]} "
+                            f"left_after={[obj.get_name() for obj in scene.robot.left_gripper.get_grasped_objects()]}"
+                        )
             else:
-                # If gripper open action, the check for un-grasp.
+                print("[BimanualDiscrete grasp debug] LEFT release")
                 scene.robot.left_gripper.release()
 
         if right_current_ee != right_action or left_current_ee != left_action:
@@ -340,6 +414,12 @@ class BimanualDiscrete(Discrete):
                 for _ in range(10):
                     scene.pyrep.step()
                     scene.task.step()
+
+        print(
+            "[BimanualDiscrete debug END] "
+            f"right_grasped={[obj.get_name() for obj in scene.robot.right_gripper.get_grasped_objects()]} "
+            f"left_grasped={[obj.get_name() for obj in scene.robot.left_gripper.get_grasped_objects()]}"
+        )
 
     def action_shape(self, scene: Scene) -> tuple:
         return 2,

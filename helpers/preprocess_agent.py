@@ -52,14 +52,14 @@ class PreprocessAgent(Agent):
         self._replay_sample = replay_sample
         return self._pose_agent.update(step, replay_sample)
 
-    def act(self, step: int, observation: dict, deterministic=False,) -> ActResult:
+    def act(self, step: int, observation: dict, deterministic=False, arm=None) -> ActResult:
         # observation = {k: torch.tensor(v) for k, v in observation.items()}
         for k, v in observation.items():
             if self._norm_rgb and "rgb" in k:
                 observation[k] = self._norm_rgb_(v)
             else:
                 observation[k] = v.float()
-        act_res = self._pose_agent.act(step, observation, deterministic,)
+        act_res = self._pose_agent.act(step, observation, deterministic, arm=arm)
         act_res.replay_elements.update({"demo": False})
         return act_res
 

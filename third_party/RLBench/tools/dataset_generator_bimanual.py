@@ -221,7 +221,7 @@ def main(save_path, tasks, episodes_per_task, all_variations, headless, image_si
     logging.debug("Selected tasks %s", tasks)
 
     fn = partial(run_all_variations, headless=headless, save_path=save_path, episodes_per_task=episodes_per_task, image_size=image_size)
-    with ctx.Pool(processes=4) as pool:
+    with ctx.Pool(processes=1) as pool:
         pool.map(fn, tasks)
 
 

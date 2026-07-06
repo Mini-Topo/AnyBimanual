@@ -32,6 +32,8 @@ STEPS_BEFORE_EPISODE_START = 10
 
 import logging
 
+import time
+
 
 class Scene(object):
     """Controls what is currently in the vrep scene. This is used for making
@@ -535,6 +537,9 @@ class Scene(object):
                         left_done = True
 
                     self.step()
+
+                    # time.sleep(0.03)
+
                     self._right_execute_demo_joint_position_action = right_path.get_executed_joint_position_action()
                     self._left_execute_demo_joint_position_action = left_path.get_executed_joint_position_action()
                     do_record()
@@ -546,7 +551,8 @@ class Scene(object):
 
     def get_demo(self, record: bool = True,
                  callable_each_step: Callable[[Observation], None] = None,
-                 randomly_place: bool = True) -> Demo:
+                 randomly_place: bool = True, 
+                 allow_unsuccessful: bool = False) -> Demo:
         """Returns a demo (list of observations)"""
 
         if not self._has_init_task:
@@ -584,7 +590,7 @@ class Scene(object):
                     break
 
         success, term = self.task.success()
-        if not success:
+        if not success and not allow_unsuccessful:
             raise DemoError('Demo was completed, but was not successful.',
                             self.task)
         return Demo(demo)
